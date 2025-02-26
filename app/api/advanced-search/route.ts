@@ -11,6 +11,7 @@ import {
 import { Agent } from 'http'
 import { Redis } from '@upstash/redis'
 import { createClient } from 'redis'
+const EXA_API_KEY = process.env.EXA_API_KEY;
 
 /**
  * Maximum number of results to fetch from SearXNG.
