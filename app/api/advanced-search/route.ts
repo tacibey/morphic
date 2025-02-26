@@ -177,7 +177,7 @@ async function advancedSearchXNGSearch(
   includeDomains: string[] = [],
   excludeDomains: string[] = []
 ): Promise<SearXNGSearchResults> {
-  const apiUrl = process.env.SEARXNG_API_URL
+const apiUrl = process.env.EXA_API_URL
   if (!apiUrl) {
     throw new Error('SEARXNG_API_URL is not set in the environment variables')
   }
