@@ -7,13 +7,14 @@ import { cookies } from 'next/headers'
 export const maxDuration = 30
 
 const DEFAULT_MODEL: Model = {
-  id: 'gpt-4o-mini',
-  name: 'GPT-4o mini',
-  provider: 'OpenAI',
-  providerId: 'openai',
+  id: 'deepseek-r1-distill-llama-70b',
+  name: 'DeepSeek R1 Distill Llama 70B',
+  provider: 'Groq',
+  providerId: 'groq',
   enabled: true,
   toolCallType: 'native'
 }
+
 
 export async function POST(req: Request) {
   try {
