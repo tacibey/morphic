@@ -11,24 +11,25 @@ import {
 import { Agent } from 'http'
 import { Redis } from '@upstash/redis'
 import { createClient } from 'redis'
-const EXA_API_KEY = process.env.EXA_API_KEY;
+
+// Exa API key; environment variable must be set in .env.local and Vercel
+const EXA_API_KEY = process.env.EXA_API_KEY
 
 /**
- * Maximum number of results to fetch from SearXNG.
- * Increasing this value can improve result quality but may impact performance.
- * In advanced search mode, this is multiplied by SEARXNG_CRAWL_MULTIPLIER for initial fetching.
+ * Maximum number of results to fetch.
+ * (Burada SearXNG için kullanılan sınır korunmuş, gerekirse Exa'nın sınırına uyarlayabilirsiniz.)
  */
 const SEARXNG_MAX_RESULTS = Math.max(
   10,
   Math.min(100, parseInt(process.env.SEARXNG_MAX_RESULTS || '50', 10))
 )
 
-const CACHE_TTL = 3600 // Cache time-to-live in seconds (1 hour)
-const CACHE_EXPIRATION_CHECK_INTERVAL = 3600000 // 1 hour in milliseconds
+const CACHE_TTL = 3600 // 1 saat
+const CACHE_EXPIRATION_CHECK_INTERVAL = 3600000 // 1 saat
 
 let redisClient: Redis | ReturnType<typeof createClient> | null = null
 
-// Initialize Redis client based on environment variables
+// Redis istemcisini başlatma fonksiyonu
 async function initializeRedisClient() {
   if (redisClient) return redisClient
 
@@ -54,7 +55,7 @@ async function initializeRedisClient() {
   return redisClient
 }
 
-// Function to get cached results
+// Önbellekten sonuç getirme fonksiyonu
 async function getCachedResults(
   cacheKey: string
 ): Promise<SearXNGSearchResults | null> {
@@ -82,7 +83,7 @@ async function getCachedResults(
   }
 }
 
-// Function to set cached results with error handling and logging
+// Önbelleğe sonuç yazma fonksiyonu
 async function setCachedResults(
   cacheKey: string,
   results: SearXNGSearchResults
@@ -103,7 +104,7 @@ async function setCachedResults(
   }
 }
 
-// Function to periodically clean up expired cache entries
+// Sürekli önbellek temizleme işlemi
 async function cleanupExpiredCache() {
   try {
     const client = await initializeRedisClient()
@@ -122,7 +123,6 @@ async function cleanupExpiredCache() {
   }
 }
 
-// Set up periodic cache cleanup
 setInterval(cleanupExpiredCache, CACHE_EXPIRATION_CHECK_INTERVAL)
 
 export async function POST(request: Request) {
@@ -136,13 +136,12 @@ export async function POST(request: Request) {
       Array.isArray(includeDomains) ? includeDomains.join(',') : ''
     }:${Array.isArray(excludeDomains) ? excludeDomains.join(',') : ''}`
 
-    // Try to get cached results
     const cachedResults = await getCachedResults(cacheKey)
     if (cachedResults) {
       return NextResponse.json(cachedResults)
     }
 
-    // If not cached, perform the search
+    // Exa API'sini kullanarak arama işlemi yapılıyor.
     const results = await advancedSearchXNGSearch(
       query,
       Math.min(maxResults, SEARXNG_MAX_RESULTS),
@@ -151,7 +150,6 @@ export async function POST(request: Request) {
       Array.isArray(excludeDomains) ? excludeDomains : []
     )
 
-    // Cache the results
     await setCachedResults(cacheKey, results)
 
     return NextResponse.json(results)
@@ -171,6 +169,8 @@ export async function POST(request: Request) {
   }
 }
 
+// Exa API entegrasyonuyla arama yapan fonksiyon.
+// Not: Mevcut tip isimleri "SearXNG..." olsa da, burada Exa API kullanılıyor.
 async function advancedSearchXNGSearch(
   query: string,
   maxResults: number = 10,
@@ -178,62 +178,44 @@ async function advancedSearchXNGSearch(
   includeDomains: string[] = [],
   excludeDomains: string[] = []
 ): Promise<SearXNGSearchResults> {
-const apiUrl = process.env.EXA_API_URL
+  const apiUrl = process.env.EXA_API_URL
   if (!apiUrl) {
-    throw new Error('SEARXNG_API_URL is not set in the environment variables')
+    throw new Error('EXA_API_URL is not set in the environment variables')
   }
 
-  const SEARXNG_ENGINES =
-    process.env.SEARXNG_ENGINES || 'google,bing,duckduckgo,wikipedia'
-  const SEARXNG_TIME_RANGE = process.env.SEARXNG_TIME_RANGE || 'None'
-  const SEARXNG_SAFESEARCH = process.env.SEARXNG_SAFESEARCH || '0'
-  const SEARXNG_CRAWL_MULTIPLIER = parseInt(
-    process.env.SEARXNG_CRAWL_MULTIPLIER || '4',
-    10
-  )
+  // Sonuç limiti; Exa'nın izin verdiği maksimum değeri kullanabilirsiniz (örneğin: 50)
+  const resultLimit = Math.min(maxResults, 50)
 
   try {
-    const url = new URL(`${apiUrl}/search`)
-    url.searchParams.append('q', query)
-    url.searchParams.append('format', 'json')
-    url.searchParams.append('categories', 'general,images')
+    // Exa API'ye POST isteği gönderiyoruz
+    const response = await fetch(`${apiUrl}/search`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': EXA_API_KEY
+      },
+      body: JSON.stringify({
+        query: query,
+        numResults: resultLimit,
+        type: "auto"
+      })
+    })
 
-    // Add time_range if it's not 'None'
-    if (SEARXNG_TIME_RANGE !== 'None') {
-      url.searchParams.append('time_range', SEARXNG_TIME_RANGE)
-    }
+    const data = await response.json()
 
-    url.searchParams.append('safesearch', SEARXNG_SAFESEARCH)
-    url.searchParams.append('engines', SEARXNG_ENGINES)
-
-    const resultsPerPage = 10
-    const pageno = Math.ceil(maxResults / resultsPerPage)
-    url.searchParams.append('pageno', String(pageno))
-
-    //console.log('SearXNG API URL:', url.toString()) // Log the full URL for debugging
-
-    const data:
-      | SearXNGResponse
-      | { error: string; status: number; data: string } =
-      await fetchJsonWithRetry(url.toString(), 3)
-
-    if ('error' in data) {
-      console.error('Invalid response from SearXNG:', data)
+    if (response.status !== 200 || !data || !data.results) {
+      console.error('Invalid response from Exa:', data)
       throw new Error(
-        `Invalid response from SearXNG: ${data.error}. Status: ${data.status}. Data: ${data.data}`
+        `Invalid response from Exa: ${data.error || 'Unknown error'}. Status: ${response.status}`
       )
     }
 
-    if (!data || !Array.isArray(data.results)) {
-      console.error('Invalid response structure from SearXNG:', data)
-      throw new Error('Invalid response structure from SearXNG')
-    }
-
+    // data.results üzerinden genel sonuçları işleyelim.
     let generalResults = data.results.filter(
       (result: SearXNGResult) => result && !result.img_src
     )
 
-    // Apply domain filtering manually
+    // Domain filtrelemesi (isteğe bağlı)
     if (includeDomains.length > 0 || excludeDomains.length > 0) {
       generalResults = generalResults.filter(result => {
         const domain = new URL(result.url).hostname
@@ -246,10 +228,11 @@ const apiUrl = process.env.EXA_API_URL
       })
     }
 
+    // Eğer gelişmiş (advanced) arama modu seçildiyse, sayfa içeriği taraması yapılır.
     if (searchDepth === 'advanced') {
       const crawledResults = await Promise.all(
         generalResults
-          .slice(0, maxResults * SEARXNG_CRAWL_MULTIPLIER)
+          .slice(0, maxResults * parseInt(process.env.SEARXNG_CRAWL_MULTIPLIER || '4', 10))
           .map(result => crawlPage(result, query))
       )
       generalResults = crawledResults
@@ -269,7 +252,7 @@ const apiUrl = process.env.EXA_API_URL
 
     generalResults = generalResults.slice(0, maxResults)
 
-    const imageResults = (data.results || [])
+    const imageResults = data.results
       .filter((result: SearXNGResult) => result && result.img_src)
       .slice(0, maxResults)
 
@@ -291,7 +274,7 @@ const apiUrl = process.env.EXA_API_URL
       number_of_results: data.number_of_results || generalResults.length
     }
   } catch (error) {
-    console.error('SearchXNG API error:', error)
+    console.error('Exa API error:', error)
     return {
       results: [],
       query: query,
@@ -301,6 +284,9 @@ const apiUrl = process.env.EXA_API_URL
   }
 }
 
+// Aşağıdaki fonksiyonlar, sayfa içeriğini tarayarak ek içerik elde etme işlemlerini gerçekleştirir.
+// (Bu kısımlar SearXNG entegrasyonundan kalma olup, Exa yanıtı üzerinde de kullanılabilir.)
+
 async function crawlPage(
   result: SearXNGResult,
   query: string
@@ -308,7 +294,6 @@ async function crawlPage(
   try {
     const html = await fetchHtmlWithTimeout(result.url, 20000)
 
-    // virtual console to suppress JSDOM warnings
     const virtualConsole = new VirtualConsole()
     virtualConsole.on('error', () => {})
     virtualConsole.on('warn', () => {})
@@ -320,7 +305,6 @@ async function crawlPage(
     })
     const document = dom.window.document
 
-    // Remove script, style, nav, header, and footer elements
     document
       .querySelectorAll('script, style, nav, header, footer')
       .forEach((el: Element) => el.remove())
@@ -333,14 +317,12 @@ async function crawlPage(
       document.body
 
     if (mainContent) {
-      // Prioritize specific content elements
       const priorityElements = mainContent.querySelectorAll('h1, h2, h3, p')
       let extractedText = Array.from(priorityElements)
         .map(el => el.textContent?.trim())
         .filter(Boolean)
         .join('\n\n')
 
-      // If not enough content, fall back to other elements
       if (extractedText.length < 500) {
         const contentElements = mainContent.querySelectorAll(
           'h4, h5, h6, li, td, th, blockquote, pre, code'
@@ -353,7 +335,6 @@ async function crawlPage(
             .join('\n\n')
       }
 
-      // Extract metadata
       const metaDescription =
         document
           .querySelector('meta[name="description"]')
@@ -371,16 +352,9 @@ async function crawlPage(
           .querySelector('meta[property="og:description"]')
           ?.getAttribute('content') || ''
 
-      // Combine metadata with extracted text
       extractedText = `${result.title}\n\n${ogTitle}\n\n${metaDescription}\n\n${ogDescription}\n\n${metaKeywords}\n\n${extractedText}`
-
-      // Limit the extracted text to 10000 characters
       extractedText = extractedText.substring(0, 10000)
-
-      // Highlight query terms in the content
       result.content = highlightQueryTerms(extractedText, query)
-
-      // Extract publication date
       const publishedDate = extractPublicationDate(document)
       if (publishedDate) {
         result.publishedDate = publishedDate.toISOString()
@@ -403,7 +377,7 @@ function highlightQueryTerms(content: string, query: string): string {
       .toLowerCase()
       .split(/\s+/)
       .filter(term => term.length > 2)
-      .map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) // Escape special characters
+      .map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
 
     let highlightedContent = content
 
@@ -417,8 +391,7 @@ function highlightQueryTerms(content: string, query: string): string {
 
     return highlightedContent
   } catch (error) {
-    //console.error('Error in highlightQueryTerms:', error)
-    return content // Return original content if highlighting fails
+    return content
   }
 }
 
@@ -429,23 +402,20 @@ function calculateRelevanceScore(result: SearXNGResult, query: string): number {
     const queryWords = lowercaseQuery
       .split(/\s+/)
       .filter(word => word.length > 2)
-      .map(word => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) // Escape special characters
+      .map(word => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
 
     let score = 0
 
-    // Check for exact phrase match
     if (lowercaseContent.includes(lowercaseQuery)) {
       score += 30
     }
 
-    // Check for individual word matches
     queryWords.forEach(word => {
       const regex = new RegExp(`\\b${word}\\b`, 'g')
       const wordCount = (lowercaseContent.match(regex) || []).length
       score += wordCount * 3
     })
 
-    // Boost score for matches in the title
     const lowercaseTitle = result.title.toLowerCase()
     if (lowercaseTitle.includes(lowercaseQuery)) {
       score += 20
@@ -458,7 +428,6 @@ function calculateRelevanceScore(result: SearXNGResult, query: string): number {
       }
     })
 
-    // Boost score for recent content (if available)
     if (result.publishedDate) {
       const publishDate = new Date(result.publishedDate)
       const now = new Date()
@@ -473,21 +442,18 @@ function calculateRelevanceScore(result: SearXNGResult, query: string): number {
       }
     }
 
-    // Penalize very short content
     if (result.content.length < 200) {
       score -= 10
     } else if (result.content.length > 1000) {
       score += 5
     }
 
-    // Boost score for content with more highlighted terms
     const highlightCount = (result.content.match(/<mark>/g) || []).length
     score += highlightCount * 2
 
     return score
   } catch (error) {
-    //console.error('Error in calculateRelevanceScore:', error)
-    return 0 // Return 0 if scoring fails
+    return 0
   }
 }
 
@@ -523,8 +489,7 @@ function extractPublicationDate(document: Document): Date | null {
 const httpAgent = new http.Agent({ keepAlive: true })
 const httpsAgent = new https.Agent({
   keepAlive: true,
-  rejectUnauthorized: true // change to false if you want to ignore SSL certificate errors
-  //but use this with caution.
+  rejectUnauthorized: true
 })
 
 async function fetchJsonWithRetry(url: string, retries: number): Promise<any> {
@@ -549,15 +514,13 @@ function fetchJson(url: string): Promise<any> {
       })
       res.on('end', () => {
         try {
-          // Check if the response is JSON
           if (res.headers['content-type']?.includes('application/json')) {
             resolve(JSON.parse(data))
           } else {
-            // If not JSON, return an object with the raw data and status
             resolve({
               error: 'Invalid JSON response',
               status: res.statusCode,
-              data: data.substring(0, 200) // Include first 200 characters of the response
+              data: data.substring(0, 200)
             })
           }
         } catch (e) {
@@ -570,7 +533,7 @@ function fetchJson(url: string): Promise<any> {
       request.destroy()
       reject(new Error('Request timed out'))
     })
-    request.setTimeout(15000) // 15 second timeout
+    request.setTimeout(15000)
   })
 }
 
@@ -601,7 +564,6 @@ function fetchHtml(url: string): Promise<string> {
         res.statusCode < 400 &&
         res.headers.location
       ) {
-        // Handle redirects
         fetchHtml(new URL(res.headers.location, url).toString())
           .then(resolve)
           .catch(reject)
@@ -614,15 +576,13 @@ function fetchHtml(url: string): Promise<string> {
       res.on('end', () => resolve(data))
     })
     request.on('error', error => {
-      //console.error(`Error fetching ${url}:`, error)
       reject(error)
     })
     request.on('timeout', () => {
       request.destroy()
-      //reject(new Error(`Request timed out for ${url}`))
       resolve('')
     })
-    request.setTimeout(10000) // 10 second timeout
+    request.setTimeout(10000)
   })
 }
 
