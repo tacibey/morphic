@@ -12,24 +12,21 @@ import { Agent } from 'http'
 import { Redis } from '@upstash/redis'
 import { createClient } from 'redis'
 
-// Exa API key; environment variable must be set in .env.local and Vercel
 const EXA_API_KEY = process.env.EXA_API_KEY
 
 /**
  * Maximum number of results to fetch.
- * (Burada SearXNG için kullanılan sınır korunmuş, gerekirse Exa'nın sınırına uyarlayabilirsiniz.)
  */
 const SEARXNG_MAX_RESULTS = Math.max(
   10,
   Math.min(100, parseInt(process.env.SEARXNG_MAX_RESULTS || '50', 10))
 )
 
-const CACHE_TTL = 3600 // 1 saat
-const CACHE_EXPIRATION_CHECK_INTERVAL = 3600000 // 1 saat
+const CACHE_TTL = 3600 // Cache time-to-live in seconds (1 hour)
+const CACHE_EXPIRATION_CHECK_INTERVAL = 3600000 // 1 hour in milliseconds
 
 let redisClient: Redis | ReturnType<typeof createClient> | null = null
 
-// Redis istemcisini başlatma fonksiyonu
 async function initializeRedisClient() {
   if (redisClient) return redisClient
 
@@ -55,7 +52,6 @@ async function initializeRedisClient() {
   return redisClient
 }
 
-// Önbellekten sonuç getirme fonksiyonu
 async function getCachedResults(
   cacheKey: string
 ): Promise<SearXNGSearchResults | null> {
@@ -83,7 +79,6 @@ async function getCachedResults(
   }
 }
 
-// Önbelleğe sonuç yazma fonksiyonu
 async function setCachedResults(
   cacheKey: string,
   results: SearXNGSearchResults
@@ -104,7 +99,6 @@ async function setCachedResults(
   }
 }
 
-// Sürekli önbellek temizleme işlemi
 async function cleanupExpiredCache() {
   try {
     const client = await initializeRedisClient()
@@ -141,7 +135,6 @@ export async function POST(request: Request) {
       return NextResponse.json(cachedResults)
     }
 
-    // Exa API'sini kullanarak arama işlemi yapılıyor.
     const results = await advancedSearchXNGSearch(
       query,
       Math.min(maxResults, SEARXNG_MAX_RESULTS),
@@ -170,7 +163,7 @@ export async function POST(request: Request) {
 }
 
 // Exa API entegrasyonuyla arama yapan fonksiyon.
-// Not: Mevcut tip isimleri "SearXNG..." olsa da, burada Exa API kullanılıyor.
+// Not: Tip isimleri SearXNG... olarak kalmış, ancak burada Exa API kullanılıyor.
 async function advancedSearchXNGSearch(
   query: string,
   maxResults: number = 10,
@@ -183,16 +176,14 @@ async function advancedSearchXNGSearch(
     throw new Error('EXA_API_URL is not set in the environment variables')
   }
 
-  // Sonuç limiti; Exa'nın izin verdiği maksimum değeri kullanabilirsiniz (örneğin: 50)
   const resultLimit = Math.min(maxResults, 50)
 
   try {
-    // Exa API'ye POST isteği gönderiyoruz
     const response = await fetch(`${apiUrl}/search`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': EXA_API_KEY
+        'x-api-key': EXA_API_KEY! // Non-null assertion to ensure string type
       },
       body: JSON.stringify({
         query: query,
@@ -210,12 +201,10 @@ async function advancedSearchXNGSearch(
       )
     }
 
-    // data.results üzerinden genel sonuçları işleyelim.
     let generalResults = data.results.filter(
       (result: SearXNGResult) => result && !result.img_src
     )
 
-    // Domain filtrelemesi (isteğe bağlı)
     if (includeDomains.length > 0 || excludeDomains.length > 0) {
       generalResults = generalResults.filter(result => {
         const domain = new URL(result.url).hostname
@@ -228,7 +217,6 @@ async function advancedSearchXNGSearch(
       })
     }
 
-    // Eğer gelişmiş (advanced) arama modu seçildiyse, sayfa içeriği taraması yapılır.
     if (searchDepth === 'advanced') {
       const crawledResults = await Promise.all(
         generalResults
@@ -283,9 +271,6 @@ async function advancedSearchXNGSearch(
     }
   }
 }
-
-// Aşağıdaki fonksiyonlar, sayfa içeriğini tarayarak ek içerik elde etme işlemlerini gerçekleştirir.
-// (Bu kısımlar SearXNG entegrasyonundan kalma olup, Exa yanıtı üzerinde de kullanılabilir.)
 
 async function crawlPage(
   result: SearXNGResult,
